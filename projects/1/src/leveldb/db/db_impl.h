@@ -13,6 +13,7 @@
 #include "db/dbformat.h"
 #include "db/log_writer.h"
 #include "db/snapshot.h"
+#include "db/bloomfilter.h"
 #include "leveldb/db.h"
 #include "leveldb/env.h"
 #include "port/port.h"
@@ -203,6 +204,8 @@ class DBImpl : public DB {
   Status bg_error_ GUARDED_BY(mutex_);
 
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
+
+  BloomFilter *filter_;
 };
 
 // Sanitize db options.  The caller should delete result.info_log if

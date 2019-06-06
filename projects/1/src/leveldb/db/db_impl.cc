@@ -23,6 +23,7 @@
 #include "db/table_cache.h"
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
+#include "db/bloomfilter.h"
 #include "leveldb/db.h"
 #include "leveldb/env.h"
 #include "leveldb/status.h"
@@ -39,6 +40,10 @@
 namespace leveldb {
 
 const int kNumNonTableCacheFiles = 10;
+
+const int kBloomFilterMaxBits = 200000;
+
+const std::vector<HashFunc> kHashFuncs = { rs_hash, js_hash, elf_hash, bkdr_hash, sdbm_hash, dbj_hash, dek_hash, ap_hash, murmur_hash };
 
 // Information kept for every waiting writer
 struct DBImpl::Writer {
@@ -147,8 +152,8 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       tmp_batch_(new WriteBatch),
       background_compaction_scheduled_(false),
       manual_compaction_(nullptr),
-      versions_(new VersionSet(dbname_, &options_, table_cache_,
-                               &internal_comparator_)) {}
+      versions_(new VersionSet(dbname_, &options_, table_cache_, &internal_comparator_)),
+      filter_(new BloomFilter(kBloomFilterMaxBits, kHashFuncs)) {}
 
 DBImpl::~DBImpl() {
   // Wait for background work to finish.
@@ -170,6 +175,7 @@ DBImpl::~DBImpl() {
   delete log_;
   delete logfile_;
   delete table_cache_;
+  delete filter_;
 
   if (owns_info_log_) {
     delete options_.info_log;
@@ -1124,13 +1130,30 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key,
     mutex_.Unlock();
     // First look in the memtable, then in the immutable memtable (if any).
     LookupKey lkey(key, snapshot);
-    if (mem->Get(lkey, value, &s)) {
-      // Done
-    } else if (imm != nullptr && imm->Get(lkey, value, &s)) {
-      // Done
-    } else {
-      s = current->Get(options, lkey, value, &stats);
-      have_stat_update = true;
+    // 如果没有在BloomFilter里面找到key,那么key肯定不在MemTable中,由此可以跳过对MemTable的查询;
+    // 如果在BloomFilter里面找到了key,那么由于BloomFilter的false-positive特性,还需在MemTable中
+    // 进一步查询才能确定key是否存在于MemTable.
+    bool flag = false;
+    do {
+       if (!filter_->Lookup(key.ToString().c_str())) {
+          printf("[DBImpl::Get()] key \"%s\" hasn't been found in bloomfilter.\n",
+                 key.ToString().c_str());
+          break;
+       } else {
+          printf("[DBImpl::Get()] key \"%s\" has been found in bloomfilter, continue to look it up in `MemTable'.\n",
+                 key.ToString().c_str());
+       }
+       flag = mem->Get(lkey, value, &s);
+       break;
+    } while (1);
+
+    if (!flag) {
+       if (imm != nullptr && imm->Get(lkey, value, &s)) {
+         // Done
+       } else {
+         s = current->Get(options, lkey, value, &stats);
+         have_stat_update = true;
+       }
     }
     mutex_.Lock();
   }
@@ -1175,6 +1198,7 @@ void DBImpl::ReleaseSnapshot(const Snapshot* snapshot) {
 
 // Convenience methods
 Status DBImpl::Put(const WriteOptions& o, const Slice& key, const Slice& val) {
+  filter_->Add(key.ToString().c_str());
   return DB::Put(o, key, val);
 }
 
