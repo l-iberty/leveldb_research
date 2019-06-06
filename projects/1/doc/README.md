@@ -36,7 +36,7 @@
 
 ![](images/test.png)
 
-- 第一运行程序时数据库文件`testdb/`不存在, 所以未在数据库中找到`Bob`
+- 第一次运行程序时数据库文件`testdb/`不存在, 所以未在数据库中找到`Bob`
 - BloomFilter没有持久化, 所以每次打开数据库时都在内存中生成一个新的BloomFilter, 在调用`Put()`把`Bob`添加进数据库前, 无法在BloomFilter中找到它
 - BloomFilter不支持删除, 所以`Alice`被从数据库中删除后仍存在于BloomFilter, 进一步查询MemTable, 发现`Alice`被标记为“已删除”
 
